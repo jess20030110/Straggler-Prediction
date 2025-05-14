@@ -1,4 +1,4 @@
-import pandas as pd
+fimport pandas as pd
 import time
 from datetime import datetime
 import numpy as np
@@ -337,7 +337,7 @@ for epoch in range(num_epochs):
         best_loss = val_loss
         counter = 0
         # Save the best model
-        torch.save(model.state_dict(), 'best_mlp_model_HuberLoss.pth')
+        torch.save(model.state_dict(), 'best_mlp_model.pth')
     else:
         counter += 1
         if counter >= patience:
@@ -346,7 +346,7 @@ for epoch in range(num_epochs):
             break
 
 # Load best model
-model.load_state_dict(torch.load('best_mlp_model_HuberLoss.pth'))
+model.load_state_dict(torch.load('best_mlp_model.pth'))
 print(f"Model trained in {time.time() - train_start:.2f} seconds")
 
 # 7. Evaluation
@@ -480,7 +480,7 @@ plt.plot([min(y_test_original), max(y_test_original)],
 plt.xlabel('True Duration (s)')
 plt.ylabel('Predicted Duration (s)')
 plt.title('True vs Predicted Durations')
-plt.savefig('True_vs_Prediction_Huber.png')
+plt.savefig('True_vs_Prediction.png')
 plt.close()
 
 # Error distribution
@@ -491,7 +491,7 @@ plt.axvline(x=0, color='r', linestyle='--')
 plt.xlabel('Prediction Error (s)')
 plt.ylabel('Frequency')
 plt.title('Distribution of Prediction Errors')
-plt.savefig('Error_Distribution_Huber.png')
+plt.savefig('Error_Distribution.png')
 plt.close()
 
 # Optional: Feature importance analysis using permutation importance
