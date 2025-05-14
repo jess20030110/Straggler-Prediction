@@ -205,7 +205,6 @@ X_test_temp['group_encoded'] = group_test_encoded
 # Add resource utilization ratio features (requested vs. used)
 print("Adding resource utilization ratio features...")
 for dataset in [X_train_temp, X_val_temp, X_test_temp]:
-    print("Columns in dataset:", dataset.info)
     dataset['cpu_usage_ratio'] = dataset['cpu_usage'] / dataset['plan_cpu'].replace(0, 1)
     dataset['mem_usage_ratio'] = dataset['avg_mem'] / dataset['plan_mem'].replace(0, 1)
     if 'plan_gpu' in dataset.columns and 'gpu_wrk_util' in dataset.columns:
@@ -264,8 +263,9 @@ input_dim = X_train_scaled.shape[1]
 model = MLPRegressor(input_dim, hidden_scale=10).to(device)
 print(f"Model architecture: {model}")
 
-# Define loss and optimizer
-criterion = nn.MSELoss()  # Using MSELoss for regression
+# # Define loss and optimizer
+# criterion = nn.MSELoss()  # Using MSELoss for regression
+criterion = nn.SmoothL1Loss() #HuberLoss
 optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
 # Learning rate scheduler
@@ -337,7 +337,7 @@ for epoch in range(num_epochs):
         best_loss = val_loss
         counter = 0
         # Save the best model
-        torch.save(model.state_dict(), 'best_mlp_model.pth')
+        torch.save(model.state_dict(), 'best_mlp_model_HuberLoss.pth')
     else:
         counter += 1
         if counter >= patience:
@@ -346,7 +346,7 @@ for epoch in range(num_epochs):
             break
 
 # Load best model
-model.load_state_dict(torch.load('best_mlp_model.pth'))
+model.load_state_dict(torch.load('best_mlp_model_HuberLoss.pth'))
 print(f"Model trained in {time.time() - train_start:.2f} seconds")
 
 # 7. Evaluation
@@ -458,8 +458,7 @@ df_all['pred_is_straggler'] = df_all['predicted_duration'] > df_all['pred_stragg
 output_columns = [
     'inst_id', 'user', 'plan_gpu', 'plan_cpu', 'plan_mem', 'task_name',
     'inst_number', 'duration', 'predicted_duration', 'absolute_error', 'absolute_percentage_error',
-    'job_name', 'submit_time', 'group', 'gpu_type_machine_spec', 'wait_time',
-    'is_straggler', 'pred_is_straggler'
+    'job_name', 'submit_time', 'group', 'wait_time', 'is_straggler', 'pred_is_straggler'
 ]
 
 output_df = df_all[output_columns].rename(columns={'inst_id': 'job_id'})
@@ -481,7 +480,7 @@ plt.plot([min(y_test_original), max(y_test_original)],
 plt.xlabel('True Duration (s)')
 plt.ylabel('Predicted Duration (s)')
 plt.title('True vs Predicted Durations')
-plt.savefig('True_vs_Prediction.png')
+plt.savefig('True_vs_Prediction_Huber.png')
 plt.close()
 
 # Error distribution
@@ -492,7 +491,7 @@ plt.axvline(x=0, color='r', linestyle='--')
 plt.xlabel('Prediction Error (s)')
 plt.ylabel('Frequency')
 plt.title('Distribution of Prediction Errors')
-plt.savefig('Error_Distribution.png')
+plt.savefig('Error_Distribution_Huber.png')
 plt.close()
 
 # Optional: Feature importance analysis using permutation importance
@@ -511,6 +510,15 @@ try:
             self.model.eval()
             with torch.no_grad():
                 return self.model(X_tensor).cpu().numpy()
+            
+        # Add a dummy fit method to satisfy scikit-learn's requirements
+        def fit(self, X, y):
+            pass  # No training is performed here
+
+        # Add a score method to calculate R²
+        def score(self, X, y):
+            predictions = self.predict(X)
+            return r2_score(y, predictions)
     
     wrapped_model = PyTorchModelWrapper(model, device)
     
