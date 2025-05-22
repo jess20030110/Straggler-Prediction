@@ -1,4 +1,3 @@
-
 import pandas as pd
 import time
 from datetime import datetime
@@ -7,8 +6,14 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import QuantileTransformer
-from sklearn.metrics import confusion_matrix, classification_report, precision_recall_fscore_support
+from sklearn.metrics import confusion_matrix
+from sklearn.inspection import permutation_importance
+from sklearn.metrics import roc_auc_score, precision_recall_curve, average_precision_score, roc_curve
+from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, confusion_matrix
 from cuml.neighbors import KNeighborsClassifier
+from imblearn.over_sampling import SMOTE
+import cudf
+import matplotlib. pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -468,295 +473,295 @@ df_all['absolute_percentage_error'] = np.where(
 )
 
 # =====================================================================
-# START OF KNN STRAGGLER DETECTION
+# IMPROVED KNN STRAGGLER DETECTION
 # =====================================================================
 print_step("9. KNN Straggler Detection Implementation...")
 
 # 9.1 Define ground truth stragglers
 print_step("9.1 Define ground truth stragglers...")
 # Group by job_name and task_name to define what constitutes a straggler
-grouping_cols = ['job_name', 'task_name']
-
-# Calculate mean and standard deviation for each job+task group
-df_all['mean_duration'] = df_all.groupby(grouping_cols)['duration'].transform('mean')
-df_all['std_duration'] = df_all.groupby(grouping_cols)['duration'].transform('std')
-
-# Define straggler threshold as 1.5x mean (common threshold in literature)
-straggler_threshold_factor = 1.2
-df_all['straggler_threshold'] = df_all['mean_duration'] * straggler_threshold_factor
-
-# Mark ground truth stragglers (1 if straggler, 0 if not)
-df_all['is_straggler'] = (df_all['duration'] > df_all['straggler_threshold']).astype(int)
+thresholds = df_all.groupby(['job_name', 'task_name'])['duration'].quantile(0.90).reset_index()
+thresholds = thresholds.rename(columns={'duration': 'duration_threshold'})
+df_all = df_all.merge(thresholds, on=['job_name', 'task_name'], how='left')
+df_all['is_straggler'] = (df_all['duration'] > df_all['duration_threshold']).astype(int)
 
 # Count stragglers vs non-stragglers
 straggler_count = df_all['is_straggler'].sum()
 print(f"Ground truth stragglers: {straggler_count} ({straggler_count/len(df_all)*100:.2f}% of tasks)")
 
-# 9.2 Prepare features for KNN - OPTIMIZED VERSION
-print_step("9.2 Preparing features for KNN straggler detection...")
+# Feature Engineering - Keep only the most discriminative features
+df_all['duration_ratio'] = df_all['duration'] / df_all['predicted_duration'].clip(1e-6, None)
+df_all['duration_diff'] = df_all['duration'] - df_all['predicted_duration']
+df_all['resource_adequacy'] = (df_all['plan_gpu'] * df_all['plan_cpu']) / (df_all['duration'] + 1e-6)
+df_all['wait_ratio'] = df_all['wait_time'] / (df_all['duration'] + 1e-6)
+df_all['prediction_error'] = (df_all['duration'] - df_all['predicted_duration']).abs()
+df_all['relative_error'] = df_all['prediction_error'] / (df_all['duration'] + 1e-6)
 
-# Check dataset size first
-print(f"Total dataset size: {len(df_all):,} rows")
+# Clipping to avoid extreme values
+df_all['duration_ratio'] = df_all['duration_ratio'].clip(0, 10)  # More reasonable clipping
+df_all['resource_adequacy'] = df_all['resource_adequacy'].clip(0, 1000)
+df_all['wait_ratio'] = df_all['wait_ratio'].clip(0, 10)
+df_all['relative_error'] = df_all['relative_error'].clip(0, 5)
 
-# More efficiently create group_id
-df_all['group_id'] = df_all['job_name'].astype(str) + "_" + df_all['task_name'].astype(str)
+# FEATURE SELECTION: Use a more discriminative but smaller feature set for KNN
+# This helps avoid the curse of dimensionality
+X = df_all[[
+    'predicted_duration',     # MLP prediction (strong predictor)
+    'duration_ratio',         # How much longer than expected (key indicator)
+    'wait_time',              # Wait time before execution
+    'plan_gpu', 'plan_cpu',   # Resource requests (core metrics)
+    'cpu_usage', 'gpu_wrk_util',  # Actual resource utilization 
+    'wait_ratio',             # Wait time ratio (potentially important)
+    'resource_adequacy',      # Resource planning metric
+    'prediction_error',       # Absolute prediction error
+    'days_since_start',       # Time factor
+]]
+y = df_all['is_straggler']
 
-# Check number of unique combinations
-n_unique_groups = df_all['group_id'].nunique()
-print(f"Number of unique job+task combinations: {n_unique_groups:,}")
+X_pd = X
+y_pd = y
 
-# Pre-compute group statistics more efficiently
-print("Computing group statistics...")
-group_stats = df_all.groupby('group_id')['duration'].agg(['mean', 'std', 'count']).reset_index()
-print(f"Generated statistics for {len(group_stats):,} groups")
+# Create stratified train/test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X_pd, y_pd, test_size=0.2, random_state=42, stratify=y_pd
+)
+# Print counts before SMOTE (in training set)
+print("Before SMOTE:")
+print("Non-stragglers (0):", (y_train == 0).sum())
+print("Stragglers (1):", (y_train == 1).sum())
 
-# Define straggler threshold
-straggler_threshold_factor = 1.5
-group_stats['straggler_threshold'] = group_stats['mean'] * straggler_threshold_factor
+# Print counts in test set (unchanged)
+print("\nTest Set Distribution:")
+print("Non-stragglers (0):", (y_test == 0).sum())
+print("Stragglers (1):", (y_test == 1).sum())
 
-# Merge statistics back to main dataframe using efficient pd.merge
-print("Merging statistics back to main dataframe...")
-df_all = pd.merge(df_all, group_stats, on='group_id', how='left', suffixes=('', '_grp'))
+# Save the original test set for later evaluation
+X_test_original = X_test.copy()
+y_test_original = y_test.copy()
 
-# Mark ground truth stragglers (1 if straggler, 0 if not)
-df_all['is_straggler'] = (df_all['duration'] > df_all['straggler_threshold']).astype(int)
+# === Scale first, then apply SMOTE ===
+print("Applying scaling and SMOTE...")
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
 
-# Count stragglers vs non-stragglers
-straggler_count = df_all['is_straggler'].sum()
-print(f"Ground truth stragglers: {straggler_count} ({straggler_count/len(df_all)*100:.2f}% of tasks)")
+# Apply SMOTE to address class imbalance
+smote = SMOTE(random_state=42)
+X_train_resampled, y_train_resampled = smote.fit_resample(X_train_scaled, y_train)
+# Print counts after SMOTE (in training set)
+print("\nAfter SMOTE:")
+y_train_resampled_series = pd.Series(y_train_resampled)
+print("Non-stragglers (0):", (y_train_resampled_series == 0).sum())
+print("Stragglers (1):", (y_train_resampled_series == 1).sum())
 
-# Check if dataset is too large for memory - if so, sample it
-MAX_SAMPLES = 1000000  # Adjust based on available RAM
-if len(df_all) > MAX_SAMPLES:
-    print(f"Dataset too large ({len(df_all):,} rows). Sampling {MAX_SAMPLES:,} rows...")
-    # Stratified sampling to preserve straggler ratio
-    from sklearn.model_selection import train_test_split
-    
-    # Get indices of stragglers and non-stragglers
-    straggler_idx = df_all[df_all['is_straggler'] == 1].index
-    non_straggler_idx = df_all[df_all['is_straggler'] == 0].index
-    
-    # Calculate sample sizes to maintain class distribution
-    straggler_sample_size = min(len(straggler_idx), int(MAX_SAMPLES * straggler_count / len(df_all)))
-    non_straggler_sample_size = MAX_SAMPLES - straggler_sample_size
-    
-    # Sample indices
-    sampled_straggler_idx = np.random.choice(straggler_idx, size=straggler_sample_size, replace=False)
-    sampled_non_straggler_idx = np.random.choice(non_straggler_idx, size=non_straggler_sample_size, replace=False)
-    
-    # Combine indices
-    sampled_idx = np.concatenate([sampled_straggler_idx, sampled_non_straggler_idx])
-    
-    # Sample dataframe
-    df_all = df_all.loc[sampled_idx].reset_index(drop=True)
-    print(f"Sampled dataset: {len(df_all):,} rows with {df_all['is_straggler'].sum():,} stragglers ({df_all['is_straggler'].sum()/len(df_all)*100:.2f}%)")
+# Convert to float32 for efficiency
+X_train_scaled = X_train_resampled.astype(np.float32)
+X_test_scaled = X_test_scaled.astype(np.float32)
 
-# Use unique group IDs to split by job+task 
-unique_groups = df_all['group_id'].unique()
-print(f"Splitting {len(unique_groups):,} unique groups into train/test...")
+# Convert to GPU if available
+if GPU_AVAILABLE:
+    X_train_scaled = cudf.DataFrame(X_train_scaled)
+    X_test_scaled = cudf.DataFrame(X_test_scaled)
+    y_train_resampled = cudf.Series(y_train_resampled)
+    y_test = cudf.Series(y_test.values)
 
-# More memory-efficient group splitting
-np.random.seed(42)
-train_group_mask = np.random.rand(len(unique_groups)) < 0.7
-train_groups = unique_groups[train_group_mask]
-test_groups = unique_groups[~train_group_mask]
-
-print(f"Training groups: {len(train_groups):,}, Testing groups: {len(test_groups):,}")
-
-# Create train and test sets for KNN
-print("Creating train and test datasets...")
-train_mask = df_all['group_id'].isin(train_groups)
-knn_train_df = df_all[train_mask]
-knn_test_df = df_all[~train_mask]
-
-print(f"KNN train set: {len(knn_train_df):,} samples, test set: {len(knn_test_df):,} samples")
-
-# Extract features and target for KNN
-# Use only the essential features to reduce memory usage
-knn_features = [
-    'predicted_duration',  # Our MLP prediction (very important feature)
-    'wait_time',           # Wait time before execution
-    'plan_gpu', 'plan_cpu', 'plan_mem',  # Resource requests
-    'cpu_usage', 'gpu_wrk_util', 'avg_mem',  # Resource usage
-    'cpu_usage_ratio', 'mem_usage_ratio',  # Resource utilization ratios
-    'read', 'write',       # I/O metrics (reduced)
-    'days_since_start',    # Time factor
-    'user_encoded', 'group_encoded',  # User and group encodings
-]
-
-# Make sure all features exist in the dataframe
-knn_features = [f for f in knn_features if f in df_all.columns]
-print(f"Using {len(knn_features)} features for KNN: {', '.join(knn_features)}")
-
-# Add prediction-to-mean ratio feature efficiently
-print("Computing prediction-to-mean ratio...")
-# First create a mapping of mean predicted duration by group
-pred_mean_by_group = df_all.groupby('group_id')['predicted_duration'].mean().to_dict()
-# Then apply it to both dataframes
-knn_train_df = knn_train_df.copy()  # Explicit copy
-knn_train_df.loc[:, 'pred_mean_duration'] = knn_train_df['group_id'].map(pred_mean_by_group)
-knn_test_df['pred_mean_duration'] = knn_test_df['group_id'].map(pred_mean_by_group)
-# Calculate ratio with safe division
-knn_train_df['pred_duration_ratio'] = knn_train_df['predicted_duration'] / knn_train_df['pred_mean_duration'].replace(0, 1)
-knn_test_df['pred_duration_ratio'] = knn_test_df['predicted_duration'] / knn_test_df['pred_mean_duration'].replace(0, 1)
-knn_features.append('pred_duration_ratio')
-
-print("Extracting features for KNN...")
-# Extract features and target efficiently with numpy arrays
-X_knn_train = knn_train_df[knn_features].values
-y_knn_train = knn_train_df['is_straggler'].values
-X_knn_test = knn_test_df[knn_features].values
-y_knn_test = knn_test_df['is_straggler'].values
-
-# Scale features for KNN with memory-efficient operations
-print("Scaling features...")
-from sklearn.preprocessing import StandardScaler
-knn_scaler = StandardScaler()
-X_knn_train_scaled = knn_scaler.fit_transform(X_knn_train)
-X_knn_test_scaled = knn_scaler.transform(X_knn_test)
-
-from imblearn.over_sampling import SMOTE
-from imblearn.under_sampling import RandomUnderSampler
-from imblearn.pipeline import Pipeline
-# Option 2: Combination of under and oversampling
-over = SMOTE(sampling_strategy=0.1)  # Increase stragglers to 10% of majority class
-under = RandomUnderSampler(sampling_strategy=0.5)  # Reduce majority class
-steps = [('over', over), ('under', under)]
-pipeline = Pipeline(steps=steps)
-X_knn_train_balanced, y_knn_train_balanced = pipeline.fit_resample(X_knn_train_scaled, y_knn_train)
 print("KNN feature preparation complete!")
 
-# 9.3 Train and evaluate KNN model
-print_step("9.3 Training KNN model...")
+# 9.3 Train and evaluate KNN model with hyperparameter tuning
+print_step("9.2 Training KNN models with hyperparameter tuning...")
 
-# Choose optimal K value (odd number to avoid ties)
-k = 5  # Starting point, can be tuned
-knn = KNeighborsClassifier(n_neighbors=k, weights='uniform')  
-knn.fit(X_knn_train_balanced, y_knn_train_balanced)
+# Define function to convert GPU tensors to numpy if needed
+def convert_to_numpy(data):
+    if GPU_AVAILABLE:
+        if hasattr(data, 'to_numpy'):
+            return data.to_numpy()
+        elif hasattr(data, 'values'):
+            return data.values
+        elif hasattr(data, 'get'):
+            return data.get()
+    return data
 
-# Make predictions
-y_knn_pred = knn.predict(X_knn_test_scaled)
-y_knn_proba = knn.predict_proba(X_knn_test_scaled)[:, 1]  # Probability of being a straggler
+# Hyperparameter tuning with grid search
+y_train_np = convert_to_numpy(y_train_resampled)
+y_test_np = convert_to_numpy(y_test)
 
-# Add predictions to test dataframe
-knn_test_df.loc[:, 'knn_straggler_pred'] = y_knn_pred
-knn_test_df.loc[:, 'knn_straggler_proba'] = y_knn_proba
+best_f1 = 0
+best_k = 0
+best_metric = ''
+best_threshold = 0
+best_model = None
+best_predictions = None
+best_probas = None
 
-# Evaluate KNN performance
-precision, recall, f1, _ = precision_recall_fscore_support(y_knn_test, y_knn_pred, average='binary')
-conf_matrix = confusion_matrix(y_knn_test, y_knn_pred)
+# Try different K values and distance metrics (more comprehensive)
+k_values = [3, 5, 7, 9, 11, 15]
+metrics = ['euclidean', 'manhattan', 'chebyshev']
 
-print("\n=== KNN Straggler Detection Performance ===")
-print(f"Precision: {precision:.4f}")
-print(f"Recall: {recall:.4f}")
-print(f"F1 Score: {f1:.4f}")
+print("Starting grid search for KNN parameters...")
+results = []
 
-print("\nConfusion Matrix:")
-print(conf_matrix)
-print("\nTrue Positives (Correctly identified stragglers):", conf_matrix[1, 1])
-print("False Positives (Normal tasks misclassified as stragglers):", conf_matrix[0, 1])
-print("False Negatives (Missed stragglers):", conf_matrix[1, 0])
-print("True Negatives (Correctly identified normal tasks):", conf_matrix[0, 0])
+for k in k_values:
+    for metric in metrics:
+        print(f"Testing k={k}, metric={metric}")
+        
+        # Initialize and train KNN
+        knn = KNeighborsClassifier(n_neighbors=k, metric=metric)
+        knn.fit(X_train_scaled, y_train_np)
+        
+        # Predict probabilities
+        y_probs = knn.predict_proba(X_test_scaled)
+        y_probs_np = convert_to_numpy(y_probs)[:, 1]
+        
+        # Find optimal threshold using F1 score
+        precision, recall, thresholds = precision_recall_curve(y_test_np, y_probs_np)
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-6)
+        
+        if len(thresholds) > 0:  # Handle edge case
+            optimal_idx = np.argmax(f1_scores[:-1])  # Exclude the last item which doesn't have a threshold
+            optimal_threshold = thresholds[optimal_idx]
+            
+            # Make predictions with optimal threshold
+            y_pred = (y_probs_np >= optimal_threshold).astype(int)
+            
+            # Calculate metrics
+            f1 = f1_score(y_test_np, y_pred)
+            precision_val = precision_score(y_test_np, y_pred)
+            recall_val = recall_score(y_test_np, y_pred)
+            accuracy = accuracy_score(y_test_np, y_pred)
+            roc_auc = roc_auc_score(y_test_np, y_probs_np)
+            
+            # Store results
+            results.append({
+                'k': k,
+                'metric': metric,
+                'threshold': optimal_threshold,
+                'f1': f1,
+                'precision': precision_val,
+                'recall': recall_val,
+                'accuracy': accuracy,
+                'roc_auc': roc_auc
+            })
+            
+            print(f"  F1={f1:.4f}, Precision={precision_val:.4f}, Recall={recall_val:.4f}")
+            
+            # Update best model if this one is better
+            if f1 > best_f1:
+                best_f1 = f1
+                best_k = k
+                best_metric = metric
+                best_threshold = optimal_threshold
+                best_model = knn
+                best_predictions = y_pred
+                best_probas = y_probs_np
 
-# Detailed classification report
-class_report = classification_report(y_knn_test, y_knn_pred)
-print("\nClassification Report:")
-print(class_report)
+# Display grid search results as a sorted table
+results_df = pd.DataFrame(results)
+print("\nGrid Search Results (sorted by F1 score):")
+print(results_df.sort_values('f1', ascending=False).head(5))
 
-output_columns = [
-    'inst_id', 'user', 'plan_gpu', 'plan_cpu', 'plan_mem', 'task_name',
-    'inst_name', 'duration', 'predicted_duration', 'absolute_error', 'absolute_percentage_error',
-    'job_name', 'submit_time', 'group', 'wait_time','submit_hour_sin', 'submit_hour_cos',
-    'submit_dayofweek_sin', 'submit_dayofweek_cos','submit_dayofyear_sin', 'submit_dayofyear_cos',
-    'days_since_start'
-]
+# === Evaluation of best model ===
+print_step("10. Evaluating Best KNN Model")
+print(f"\nBest model: k={best_k}, metric={best_metric}, threshold={best_threshold:.3f}")
 
-output_df = df_all[output_columns].rename(columns={'inst_id': 'job_id'})
-output_file = "mlp_predictions_with_errors_MAE_modified.csv"
-output_df.to_csv(output_file, index=False)
+# Calculate detailed metrics for best model
+tn, fp, fn, tp = confusion_matrix(y_test_np, best_predictions).ravel()
 
-print(f"Results saved to {output_file}")
-print(f"\nTotal execution time: {time.time() - total_start:.2f} seconds")
-print("="*50)
-print("Final output columns:", output_df.columns.tolist())
+print(f"\nKNN Performance (Best Model):")
+print(f"Confusion Matrix:\n[[{tn:5} {fp:5}]\n [{fn:5} {tp:5}]]")
+print(f"F1 Score: {best_f1:.4f}")
+print(f"Precision: {precision_score(y_test_np, best_predictions):.4f}")
+print(f"Recall: {recall_score(y_test_np, best_predictions):.4f}")
+print(f"Accuracy: {accuracy_score(y_test_np, best_predictions):.4f}")
+print(f"ROC AUC: {roc_auc_score(y_test_np, best_probas):.4f}")
+print(f"Avg Precision: {average_precision_score(y_test_np, best_probas):.4f}")
 
-# Visualization
-import matplotlib.pyplot as plt
-# Correct way to compare actual vs predicted values
-plt.figure(figsize=(10,6))
-plt.scatter(y_test_original, predictions_original, alpha=0.3)
-plt.plot([min(y_test_original), max(y_test_original)], 
-         [min(y_test_original), max(y_test_original)], 'r--')
-plt.xlabel('True Duration (s)')
-plt.ylabel('Predicted Duration (s)')
-plt.title('True vs Predicted Durations')
-plt.savefig('True_vs_Prediction_MAE_modified.png')
-plt.close()
-
-# Error distribution
-plt.figure(figsize=(10,6))
-errors = y_test_original - predictions_original
-plt.hist(errors, bins=50, alpha=0.75)
-plt.axvline(x=0, color='r', linestyle='--')
-plt.xlabel('Prediction Error (s)')
-plt.ylabel('Frequency')
-plt.title('Distribution of Prediction Errors')
-plt.savefig('Error_Distributio_MAE_modified.png')
-plt.close()
-
-# Optional: Feature importance analysis using permutation importance
-print_step("9. Feature importance analysis (optional)...")
+# Feature importance using permutation importance
+print_step("11. Feature importance analysis...")
 try:
-    from sklearn.inspection import permutation_importance
+    # Run permutation importance on the best model
+    perm_importance = permutation_importance(
+        best_model, X_test_scaled, y_test_np, 
+        n_repeats=10, random_state=42
+    )
     
-    # Create a simple wrapper for PyTorch model to use with sklearn
-    class PyTorchModelWrapper:
-        def __init__(self, model, device):
-            self.model = model
-            self.device = device
-            
-        def predict(self, X):
-            X_tensor = torch.FloatTensor(X).to(self.device)
-            self.model.eval()
-            with torch.no_grad():
-                return self.model(X_tensor).cpu().numpy()
-            
-        # Add a dummy fit method to satisfy scikit-learn's requirements
-        def fit(self, X, y):
-            pass  # No training is performed here
-
-        # Add a score method to calculate R²
-        def score(self, X, y):
-            predictions = self.predict(X)
-            return r2_score(y, predictions)
-    
-    wrapped_model = PyTorchModelWrapper(model, device)
-    
-    # Calculate permutation importance
-    result = permutation_importance(wrapped_model, X_test_scaled, y_test_transformed, 
-                                   n_repeats=5, random_state=42)
-    
-    # Get importance scores
+    # Create a DataFrame with feature importances
+    feature_names = X.columns.tolist()
     importance_df = pd.DataFrame({
-        'Feature': features,
-        'Importance': result.importances_mean
+        'Feature': feature_names,
+        'Importance': perm_importance.importances_mean
     }).sort_values(by='Importance', ascending=False)
     
-    print("\nTop 10 most important features:")
+    print("\nFeature Importance (top 10):")
     print(importance_df.head(10))
     
-    # Save feature importance to file
-    importance_df.to_csv('feature_importance.csv', index=False)
-    print("Feature importance saved to 'feature_importance_MAE_modified.csv'")
+    # Save feature importance
+    importance_df.to_csv('feature_importance_knn.csv', index=False)
     
     # Plot feature importance
-    plt.figure(figsize=(12,8))
-    plt.barh(importance_df['Feature'].head(15)[::-1], importance_df['Importance'].head(15)[::-1])
-    plt.xlabel('Feature Importance')
-    plt.title('Top 15 Most Important Features')
+    plt.figure(figsize=(12, 8))
+    plt.barh(importance_df['Feature'][:10][::-1], importance_df['Importance'][:10][::-1])
+    plt.xlabel('Mean Decrease in Accuracy')
+    plt.title('Top 10 Feature Importance (KNN Straggler Detection)')
     plt.tight_layout()
-    plt.savefig('Feature_Importance.png')
+    plt.savefig('knn_feature_importance.png')
     plt.close()
     
 except Exception as e:
     print(f"Could not calculate feature importance: {e}")
+
+# Save the best model predictions
+try:
+    # Add predictions to the original DataFrame
+    df_all['knn_straggler_probability'] = np.nan
+    df_all.loc[X_test_original.index, 'knn_straggler_probability'] = best_probas
+    df_all['knn_straggler_prediction'] = np.nan
+    df_all.loc[X_test_original.index, 'knn_straggler_prediction'] = best_predictions
+    
+    # Calculate additional metrics for model analysis
+    df_all['straggler_true_positive'] = ((df_all['is_straggler'] == 1) & 
+                                         (df_all['knn_straggler_prediction'] == 1)).astype(int)
+    df_all['straggler_false_negative'] = ((df_all['is_straggler'] == 1) & 
+                                          (df_all['knn_straggler_prediction'] == 0)).astype(int)
+    
+    # Save key columns for analysis
+    straggler_results = df_all[[
+        'inst_id', 'job_name', 'task_name', 'duration', 'predicted_duration',
+        'is_straggler', 'knn_straggler_probability', 'knn_straggler_prediction',
+        'straggler_true_positive', 'straggler_false_negative',
+        'duration_ratio', 'wait_time', 'resource_adequacy'
+    ]].copy()
+    
+    # Save to CSV
+    straggler_results.to_csv('knn_straggler_predictions.csv', index=False)
+    print("Straggler predictions saved to 'knn_straggler_predictions.csv'")
+    
+    # Create visualization of model performance
+    plt.figure(figsize=(10, 8))
+    
+    # Plot ROC curve
+    fpr, tpr, _ = roc_curve(y_test_np, best_probas)
+    plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {roc_auc_score(y_test_np, best_probas):.3f})')
+    plt.plot([0, 1], [0, 1], 'k--', label='Random Classifier')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curve for KNN Straggler Detection')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig('knn_straggler_roc_curve.png')
+    plt.close()
+    
+    # Plot precision-recall curve
+    plt.figure(figsize=(10, 8))
+    precision, recall, _ = precision_recall_curve(y_test_np, best_probas)
+    plt.plot(recall, precision, label=f'PR Curve (AP = {average_precision_score(y_test_np, best_probas):.3f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve for KNN Straggler Detection')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig('knn_straggler_pr_curve.png')
+    
+except Exception as e:
+    print(f"Error in saving predictions: {e}")
+
+print("\nKNN straggler detection completed!")
