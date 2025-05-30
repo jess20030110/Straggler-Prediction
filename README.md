@@ -3,11 +3,11 @@
 
 ## Prerequisite
 - Preprocessing:
-- pandas
+  - pandas
 - Training:
-- pip install pandas numpy scikit-learn torch torchvision
-- pip install cuml cudf  # For GPU-accelerated KNN (optional)
-- pip install imbalanced-learn matplotlib
+  - pip install pandas numpy scikit-learn torch torchvision
+  - pip install cuml cudf  # For GPU-accelerated KNN (optional)
+  - pip install imbalanced-learn matplotlib
 
 ## Dataset
 - Alibaba cluster-trace-gpu-v2020
