@@ -1,5 +1,5 @@
 # SPF
-## This repository contains a two-stage pipeline for analyzing job execution data and predicting job durations with straggler detection capabilities.
+## This repository contains SPF, a two-stage pipeline for analyzing job execution data and predicting job durations with straggler detection capabilities. SPF (Straggler Prediction Framework) provides a comprehensive solution for analyzing large-scale job execution data from distributed computing environments. It combines data preprocessing with advanced machine learning techniques to predict job execution times and identify performance anomalies (stragglers).
 
 ## Prerequisite
 - Preprocessing:
