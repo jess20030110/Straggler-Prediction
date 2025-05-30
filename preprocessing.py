@@ -33,7 +33,7 @@ df_machine_spec['machine'] = df_machine_spec['machine'].astype(str)
 df_machine_metric['machine'] = df_machine_metric['machine'].astype(str)
 df_instance['machine'] = df_instance['machine'].astype(str)
 
-# 2. Merge four datasets
+# 2. Merge 7 datasets
 print("\nMerging datasets...")
 # Step 1: Merge task + job
 df_merged = pd.merge(
@@ -75,7 +75,7 @@ df_merged = pd.merge(
 )
 print(f"\nTotal rows after merging machine spec: {len(df_merged):,}")
 
-# Step 5: Merge with machine metrics (added this step)
+# Step 5: Merge with machine metrics
 df_merged = pd.merge(
     df_merged,
     df_machine_metric,
@@ -85,11 +85,7 @@ df_merged = pd.merge(
 )
 print(f"\nTotal rows after merging machine metric: {len(df_merged):,}")
 
-common_cols = set(df_merged.columns) & set(df_sensor.columns)
-print(f"Common columns with sensor: {common_cols}")
-
-# Step 6: Handle sensor data differently - aggregate at instance level first
-# Add gpu_name back by merging with the original df_sensor
+# Step 6: Merge with sensor
 df_merged = pd.merge(
     df_merged,
     df_sensor[['gpu_name','job_name', 'task_name', 'inst_id', 'worker_name', 'machine']].drop_duplicates(),
@@ -118,23 +114,15 @@ df_final = pd.merge(
     how='left',
     suffixes=('', '_sensor')
 )
-   
-print(f"\nFinal merged dataset: {len(df_final):,} rows")
-print(df_final.columns)
-print(df_final.info)
 
 # 3. Filtering steps
 print("\nApplying group filters...")
-
 # 3.1 Count unique groups
 unique_groups = df_final['group'].nunique()
-print(f"Number of unique groups: {unique_groups:,}")
 
 # 3.2 Count group frequencies
 group_counts = df_final['group'].value_counts().reset_index()
 group_counts.columns = ['group', 'count']
-print("\nTop 10 groups by frequency:")
-print(group_counts.head(10))
 
 # 3.3 Filter for groups appearing at least 5 times
 min_group_count = 5
@@ -147,39 +135,23 @@ print(f"Number of groups remaining: {dfa_filtered['group'].nunique():,}")
 # Final output
 print("\nFinal filtered data:")
 print(f"Columns with merging: {df_final.columns}")
-print(dfa_filtered.head())
 
 # 4. Column renaming and adding new columns
 print("\nRenaming columns and adding new features...")
-
 # Rename start_time_job to submit_time
 dfa_filtered = dfa_filtered.rename(columns={'start_time_job': 'submit_time'})
-
 # Calculate the earliest start_time_task for each job
 earliest_start_per_job = dfa_filtered.groupby('job_name')['start_time_task'].min().reset_index()
 earliest_start_per_job.columns = ['job_name', 'earliest_start_time_task']
-
 # Merge this back with the original dataframe
 dfa_filtered = pd.merge(dfa_filtered, earliest_start_per_job, on='job_name')
-
 # Calculate wait_time (earliest start_time_task - submit_time)
 dfa_filtered['wait_time'] = (dfa_filtered['earliest_start_time_task'] - dfa_filtered['submit_time'])
-
 # Calculate duration (end_time - start_time)
 dfa_filtered['duration'] = (dfa_filtered['end_time'] - dfa_filtered['start_time'])
-
 # Drop the temporary column
 dfa_filtered = dfa_filtered.drop(columns=['earliest_start_time_task'])
 
-# Check the number of NaN values in each column
-nan_counts = dfa_filtered.isna().sum()
-# Print the result
-print(nan_counts)
-
-# Final output
-print("\nFinal filtered data with new columns:")
-print(f"Columns: {dfa_filtered.columns}")
-print(dfa_filtered.head())
 
 # 5. Save the filtered and grouped (but not aggregated) data
 output_file = "filtered_grouped_data_new.csv"
