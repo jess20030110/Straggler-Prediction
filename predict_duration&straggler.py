@@ -75,7 +75,7 @@ class MLPRegressor(nn.Module):
 
 # 1. Data Loading and Preprocessing
 print_step("1. Loading and preprocessing data...")
-df = pd.read_csv("/mnt/newdisk/jess/2020_Trace/Preprocess/filtered_grouped_data_new.csv")
+df = pd.read_csv("/mnt/newdisk/jess/2020_Trace/Preprocess/filtered_grouped_data.csv")
 print(f"Loaded {len(df):,} rows")
 
 # Convert submit_time to datetime
