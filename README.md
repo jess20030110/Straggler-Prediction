@@ -38,6 +38,30 @@ For the scripts to run correctly, you must create the Preprocess and Result dire
     └── classify_stragglers.py
 ```
 
-## Usage
-1. python preprocessing.py
-2. python predict_duration&straggler.py
+## Execution Workflow
+### The project involves a sequential, four-step process. Run the scripts in the following order.
+#### Step 1: Merge Raw Datasets
+##### This script combines the various raw data tables into a single CSV file.
+``` bash
+python merge_dataset.py
+```
+- Input: Raw .csv files from 2020_Trace/Dataset/.
+- Output: Preprocess/instance_merged.csv.
+
+#### Step 1: Preprocess Merged Data
+##### This script cleans the merged data, handles missing values, and filters records to create a dataset ready for modeling.
+``` bash
+python preprocess.py
+```
+- Input: Preprocess/instance_merged.csv.
+- Output: Preprocess/instance_preprocessed.csv.
+
+#### Train Duration Prediction Model
+##### This script performs all deep learning tasks. It trains the MLP model, uses the trained model to generate predictions for the entire dataset, and saves all its key outputs to the Result folder.
+```bash
+python predict_durations_MLP.py
+```
+- Input: Preprocess/instance_preprocessed.csv.
+- Outputs:
+- - A trained PyTorch model saved as Result/mlp_model_hiddenScale6.pth.
+  - An augmented data file saved as Result/predictions_for_classification.csv. This file contains all original features plus the new predicted_duration column and a split column.
