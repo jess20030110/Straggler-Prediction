@@ -63,8 +63,8 @@ python predict_durations_MLP.py
 ```
 - Input: Preprocess/instance_preprocessed.csv.
 - Outputs:
-  - 1. A trained PyTorch model saved as Result/mlp_model_hiddenScale6.pth.
-  - 2. An augmented data file saved as Result/predictions_for_classification.csv. This file contains all original features plus the new predicted_duration column and a split column.
+   1. A trained PyTorch model saved as Result/mlp_model_hiddenScale6.pth.
+   2. An augmented data file saved as Result/predictions_for_classification.csv. This file contains all original features plus the new predicted_duration column and a split column.
 
 #### Step 4: Classify Straggler Instances
 ##### This script loads the augmented data from Step 3 and focuses entirely on training a RandomForestClassifier to identify straggler instances.
@@ -73,5 +73,5 @@ python classify_stragglers.py
 ```
 - Input: Result/predictions_for_classification.csv.
 - Output:
-  - 1. A final results file saved as Result/final_straggler_classification_results.csv.
-  - 2. Classifier performance metrics (F1 Score, Precision, and Recall) printed to the console.
+   1. A final results file saved as Result/final_straggler_classification_results.csv.
+   2. Classifier performance metrics (F1 Score, Precision, and Recall) printed to the console.
