@@ -35,7 +35,7 @@ print(f"Loaded {len(df):,} rows with pre-computed predictions.")
 
 # 2. Define Straggler Labels
 print_step("2. Defining straggler labels using the training set split...")
-train_data = df[df['split'] == 'train']
+train_data = df[df['split'] == 'train'].copy()
 group_thresholds = train_data.groupby('group')['duration'].quantile(STRAGGLER_PERCENTILE)
 global_threshold = train_data['duration'].quantile(STRAGGLER_PERCENTILE)
 
@@ -62,8 +62,8 @@ RandomForest_features = [f for f in RandomForest_features if f in df.columns]
 print(RandomForest_features)
 
 # Prepare train/test sets using the 'split' column
-train_df = df[df['split'] == 'train']
-test_df = df[df['split'] == 'test']
+train_df = df[df['split'] == 'train'].copy()
+test_df = df[df['split'] == 'test'].copy()
 
 X_train_rf = train_df[RandomForest_features].fillna(0).values
 y_train_rf = train_df['is_straggler'].values
@@ -92,8 +92,8 @@ os.makedirs(RESULT_PATH, exist_ok=True)
 test_df['rf_straggler_prediction'] = y_test_pred
 
 results_columns = [
-    'inst_id', 'job_name', 'duration', 'predicted_duration', 'duration_threshold',
-    'is_straggler', 'rf_straggler_prediction', 'absolute_error'
+    'inst_name', 'job_name', 'duration', 'predicted_duration', 'duration_threshold',
+    'is_straggler', 'rf_straggler_prediction', 'absolute_error', 'absolute_percentage_error'
 ]
 final_results = test_df[results_columns].copy()
 output_path = f'{RESULT_PATH}/final_straggler_classification_results.csv'
