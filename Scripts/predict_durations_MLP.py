@@ -10,6 +10,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import SelectKBest, f_classif
 from imblearn.pipeline import Pipeline as ImbPipeline
 from sklearn.model_selection import KFold
+import os
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,13 @@ from torch.utils.data import DataLoader, TensorDataset
 
 def print_step(message):
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] {message}")
+
+# --- Configuration ---
+BASE_PATH = "/mnt/newdisk/jess/Alibaba2020"
+PREPROCESS_PATH = f"{BASE_PATH}/Preprocess"
+RESULT_PATH = f"{BASE_PATH}/Result"
+# The output of this script is a single CSV file
+OUTPUT_CSV_PATH = f"{RESULT_PATH}/predictions_for_classification.csv"
 
 # Track total execution time
 total_start = time.time()
@@ -65,12 +73,13 @@ class MLPRegressor(nn.Module):
     def forward(self, x):
         return self.model(x).squeeze()
 
-# 1. Data Loading and Preprocessing (unchanged)
+# 1. Data Loading and Preprocessing
 print_step("1. Loading and preprocessing data...")
-df = pd.read_csv("/mnt/newdisk/jess/Alibaba2020/Preprocess/instance_preprocessed.csv")
+df = pd.read_csv(f"{PREPROCESS_PATH}/instance_preprocessed.csv")
 print(f"Loaded {len(df):,} rows")
 
 # Time-based feature engineering
+print_step("2. Performing feature engineering and One-hot encoding...")
 df['submit_time'] = pd.to_datetime(df['submit_time'], unit='s')
 reference_date = df['submit_time'].min()
 df['days_since_start'] = (df['submit_time'] - reference_date).dt.days
@@ -124,13 +133,16 @@ y = df[target].astype('float32')
 X_train_temp, X_test_temp, y_train, y_test = train_test_split(
     X_temp, y, test_size=0.2, random_state=42, stratify=pd.qcut(y, q=5, duplicates='drop')
 )
-print(pd.qcut(y, q=5).value_counts())
+# Add a 'split' column to the original dataframe
+df['split'] = 'train'
+df.loc[X_test_temp.index, 'split'] = 'test'
+# print(pd.qcut(y, q=5).value_counts())
 
 print(f"Train size: {len(X_train_temp)} ({len(X_train_temp)/len(df)*100:.1f}%)")
 print(f"Test size: {len(X_test_temp)} ({len(X_test_temp)/len(df)*100:.1f}%)")
 
 # 4. Target encoding (now only applied to train/test to prevent leakage)
-print_step("4. Target encoding...")
+print_step("4. Target encoding and generate new statistical features...")
 user_encoder = TargetEncoder(target_type='continuous', smooth='auto', cv=5, random_state=42)
 group_encoder = TargetEncoder(target_type='continuous', smooth='auto', cv=5, random_state=42)
 machine_encoder = TargetEncoder(target_type='continuous', smooth='auto', cv=5, random_state=42)
@@ -156,7 +168,7 @@ X_train = X_train_temp[features].fillna(0).astype('float32')
 X_test = X_test_temp[features].fillna(0).astype('float32')
 
 # 5. Feature scaling (unchanged, now only train/test)
-print_step("5. Feature scaling...")
+print_step("5. Feature scaling and Target scaling...")
 # Feature scaling
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
@@ -233,12 +245,15 @@ for epoch in range(num_epochs):
     if avg_cv_loss < best_val_loss:
         best_val_loss = avg_cv_loss
         patience_counter = 0
-        torch.save(model.state_dict(), '/mnt/newdisk/jess/Alibaba2020/Result/mlp_model_hiddenScale6.pth')
+        os.makedirs(RESULT_PATH, exist_ok=True)
+        torch.save(model.state_dict(), f'{RESULT_PATH}/mlp_model_hiddenScale6.pth')
     else:
         patience_counter += 1
         if patience_counter >= 10:
             print(f'Early stopping at epoch {epoch+1} (CV loss did not improve for 10 epochs)')
             break
+
+print("MLP Training Complete.")
 
 # 7. MLP Evaluation 
 print_step("7. Evaluating MLP model...")
@@ -265,3 +280,35 @@ if np.any(valid_mask):
     mape = np.mean(ape)
     print(f"MAPE (non-zero): {mape:.2f}%")
     print(f"Predictions within 25% of actual: {np.mean(ape <= 25)*100:.2f}%")
+
+# 8. Generate Predictions for the ENTIRE Dataset
+print_step("8. Generating predictions for the entire dataset...")
+model.eval()
+# Apply all transformations to the full dataframe `df`
+df['user_encoded'] = user_encoder.transform(df[['user']]).flatten()
+df['group_encoded'] = group_encoder.transform(df[['group']]).flatten()
+df['machine_encoded'] = machine_encoder.transform(df[['machine']]).flatten()
+df['cpu_usage_ratio'] = df['cpu_usage'] / df['plan_cpu'].replace(0, 1)
+df['mem_usage_ratio'] = df['avg_mem'] / df['plan_mem'].replace(0, 1)
+df['gpu_usage_ratio'] = df['gpu_wrk_util'] / df['plan_gpu'].replace(0, 1)
+
+X_full = df[features].fillna(0).astype('float32')
+X_full_scaled = scaler.transform(X_full)
+X_full_tensor = torch.FloatTensor(X_full_scaled).to(device)
+
+with torch.no_grad():
+    full_predictions_transformed = model(X_full_tensor).cpu().numpy()
+    # Inverse transform predictions to get original scale
+    df['predicted_duration'] = target_scaler.inverse_transform(full_predictions_transformed.reshape(-1, 1)).flatten()
+    df['absolute_error'] = np.abs(df['duration'] - df['predicted_duration'])
+    df['absolute_percentage_error'] = np.where(
+        df['duration'] != 0,
+        np.abs((df['duration'] - df['predicted_duration']) / df['duration']) * 100,
+        np.nan
+    )
+
+# 9. Save Augmented Data to a Single CSV File
+print_step(f"9. Saving augmented data to {OUTPUT_CSV_PATH}...")
+df.to_csv(OUTPUT_CSV_PATH, index=False)
+print("Data saved successfully.")
+print(f"\nTotal execution time: {time.time() - total_start:.2f} seconds")
