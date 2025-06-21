@@ -15,6 +15,17 @@ pip install pandas numpy scikit-learn torch imblearn
 
 ## Dataset
 - This project requires the Alibaba Cluster Trace 2020 dataset, which can be downloaded from https://github.com/alibaba/clusterdata/tree/master/cluster-trace-gpu-v2020
+- You need the following CSV files from the Alibaba 2020 cluster trace dataset:
+```bash
+2020_Trace/Dataset/
+├── pai_instance_table/pai_instance_table.csv
+├── pai_task_table/pai_task_table.csv
+├── pai_group_tag_table/pai_group_tag_table.csv
+├── pai_job_table/pai_job_table.csv
+├── pai_machine_metric/pai_machine_metric.csv
+├── pai_machine_spec/pai_machine_spec.csv
+└── pai_sensor_table/pai_sensor_table.csv
+```
 
 ## Directory Structure
 For the scripts to run correctly, you must create the Preprocess and Result directories. The project should be organized as follows:
@@ -27,9 +38,9 @@ For the scripts to run correctly, you must create the Preprocess and Result dire
 |       |   └── pai_instance_table.csv
 |       └── ... (other raw data folders)
 |
-├── Preprocess/                       # For intermediate files from initial data prep
+├── Preprocess/                       # Intermediate and processed files
 |
-├── Result/                           # For all final models and key data artifacts
+├── Result/                           # Model outputs and results
 |
 └── Scripts/                          # Location for the Python scripts
     ├── merge_dataset.py
