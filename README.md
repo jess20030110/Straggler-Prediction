@@ -48,7 +48,7 @@ python merge_dataset.py
 - Input: Raw .csv files from 2020_Trace/Dataset/.
 - Output: Preprocess/instance_merged.csv.
 
-#### Step 1: Preprocess Merged Data
+#### Step 2: Preprocess Merged Data
 ##### This script cleans the merged data, handles missing values, and filters records to create a dataset ready for modeling.
 ``` bash
 python preprocess.py
@@ -56,12 +56,22 @@ python preprocess.py
 - Input: Preprocess/instance_merged.csv.
 - Output: Preprocess/instance_preprocessed.csv.
 
-#### Train Duration Prediction Model
+#### Step 3: Train Duration Prediction Model
 ##### This script performs all deep learning tasks. It trains the MLP model, uses the trained model to generate predictions for the entire dataset, and saves all its key outputs to the Result folder.
 ```bash
 python predict_durations_MLP.py
 ```
 - Input: Preprocess/instance_preprocessed.csv.
 - Outputs:
-  - A trained PyTorch model saved as Result/mlp_model_hiddenScale6.pth.
-  - An augmented data file saved as Result/predictions_for_classification.csv. This file contains all original features plus the new predicted_duration column and a split column.
+  - 1. A trained PyTorch model saved as Result/mlp_model_hiddenScale6.pth.
+  - 2. An augmented data file saved as Result/predictions_for_classification.csv. This file contains all original features plus the new predicted_duration column and a split column.
+
+#### Step 4: Classify Straggler Instances
+##### This script loads the augmented data from Step 3 and focuses entirely on training a RandomForestClassifier to identify straggler instances.
+```bash
+python classify_stragglers.py
+```
+- Input: Result/predictions_for_classification.csv.
+- Output:
+  - 1. A final results file saved as Result/final_straggler_classification_results.csv.
+  - 2. Classifier performance metrics (F1 Score, Precision, and Recall) printed to the console.
