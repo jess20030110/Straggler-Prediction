@@ -1,7 +1,7 @@
 # SPF
 ### This repository contains a Straggler Prediction Framework (SPF), a two-stage pipeline to analyze the Alibaba Cluster Trace 2020 dataset.
-1. Stage 1: Duration Prediction: An MLP (Multi-Layer Perceptron) model is trained to predict the execution duration of job instances.
-2. Stage 2: Straggler Classification: The predicted duration is then used as a feature to train a RandomForestClassifier that identifies "straggler" instances, those that run for an unusually long time.
+- Stage 1: Duration Prediction: An MLP (Multi-Layer Perceptron) model is trained to predict the execution duration of job instances.
+- Stage 2: Straggler Classification: The predicted duration is then used as a feature to train a RandomForestClassifier that identifies "straggler" instances, those that run for an unusually long time.
 
 ## Prerequisite
 ### Software
