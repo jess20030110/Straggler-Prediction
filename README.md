@@ -34,8 +34,8 @@ For the scripts to run correctly, you must create the Preprocess and Result dire
 └── Scripts/                          # Location for the Python scripts
     ├── merge_dataset.py
     ├── preprocess.py
-    ├── 1_train_duration_model.py
-    └── 2_classify_stragglers.py
+    ├── predict_durations_MLP.py
+    └── classify_stragglers.py
 ```
 
 ## Usage
